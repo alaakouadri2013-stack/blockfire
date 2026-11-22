@@ -124,9 +124,14 @@ function mergeSnap(acc, snap) {
     for (const k in (snap.items || {})) acc.items[k] = Math.max(acc.items[k] || 0, Math.floor(+snap.items[k] || 0));
     acc.synced = true;
   } else {
-    const earned = Math.max(0, Math.min(1e6, Math.floor(+snap.earned || 0)));
+    /* anti-abuse: a device can only add what could really be earned since its last sync (300 base + 60 per real minute, max 2000) */
+    const now = Date.now(), mins = Math.min(1440, Math.max(0, (now - (acc.lastSyncAt || acc.createdAt || now)) / 60000));
+    const cap = Math.min(2000, 300 + Math.floor(mins * 60));
+    const earned = Math.max(0, Math.min(cap, Math.floor(+snap.earned || 0)));
     acc.gold += earned;
-    for (const k in (snap.gained || {})) acc.items[k] = (acc.items[k] || 0) + Math.max(0, Math.min(1e5, Math.floor(+snap.gained[k] || 0)));
+    const icap = Math.min(300, 40 + Math.floor(mins * 4));
+    for (const k in (snap.gained || {})) acc.items[k] = (acc.items[k] || 0) + Math.max(0, Math.min(icap, Math.floor(+snap.gained[k] || 0)));
+    acc.lastSyncAt = now;
   }
   save();
   return view(acc);
