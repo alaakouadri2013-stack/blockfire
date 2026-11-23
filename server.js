@@ -16,7 +16,7 @@ const rooms = new Map();
 const ACC = require('./accounts');
 const ONLINE = new Map();   // serial -> Conn, for friend invites
 /* ---- matchmaking: real players waiting for the same mode are grouped at random ---- */
-const queues = { ffa: [], tdm: [] };
+const queues = { ffa: [], tdm: [], team: [], open: [] };
 function dequeue(c) {
   if (!c.queued) return;
   const q = queues[c.queued]; if (q) { const i = q.indexOf(c); if (i >= 0) q.splice(i, 1); }
@@ -28,10 +28,11 @@ function matchQueue(mode) {
     for (let i = q.length - 1; i > 0; i--) { const j = crypto.randomInt(i + 1); [q[i], q[j]] = [q[j], q[i]]; }
     const group = q.splice(0, Math.min(MAX, q.length));
     const host = group[0];
-    const r = { code: newCode(), host: 0, members: [], started: true, mode, map: host.qmap, limit: host.qlimit };
+    /* open world: everyone in the room shares one world seed and the same broken resources */
+    const r = { code: newCode(), host: 0, members: [], started: true, mode, map: host.qmap, limit: host.qlimit, seed: mode === 'open' ? crypto.randomInt(1, 2147483000) : 0, nodes: new Set() };
     rooms.set(r.code, r);
     group.forEach((c, i) => { c.queued = null; c.seat = i; c.room = r; c.st = newSt(); c.snap = null; r.members.push(c); });
-    const msg = { t: 'start', mode, map: r.map, limit: r.limit, players: roster(r) };
+    const msg = { t: 'start', mode, map: r.map, limit: r.limit, seed: r.seed, players: roster(r) };
     for (const x of r.members) x.send(msg);
   }
 }
@@ -210,6 +211,9 @@ function accAction(c, m) {
     case 'avatar': r = ACC.setAvatar(a, m.img); break;
     case 'buy': r = ACC.buy(a, String(m.id || '')); break;
     case 'sell': r = ACC.sell(a, m.items || {}); break;
+    case 'deposit': r = ACC.deposit(a, m.items || {}); break;
+    case 'withdraw': r = ACC.withdraw(a, m.items || {}); break;
+    case 'buyres': r = ACC.buyRes(a, String(m.id || ''), m.qty); break;
     case 'frreq': r = ACC.friendReq(a, m.serial); if (r.target) pushFriend(r.target.serial, { t: 'frnote', k: 'frGot', from: a.serial, name: a.name }); break;
     case 'fraccept': r = ACC.friendAccept(a, +m.serial); if (r.target) pushFriend(r.target.serial, { t: 'frnote', k: 'frAccepted', from: a.serial, name: a.name }); break;
     case 'frdecl': r = ACC.friendDecline(a, +m.serial); break;
@@ -227,7 +231,7 @@ function accAction(c, m) {
   if (!r) return;
   if (r.err) return c.send({ t: 'error', k: r.err });
   if (r.got !== undefined) c.send({ t: 'sold', gold: r.got });
-  return c.send({ t: 'acct', acc: r.acc });
+  return c.send({ t: 'acct', acc: r.acc, taken: r.taken, give: r.give });
 }
 function handle(c, m) {
   switch (m.t) {
@@ -291,7 +295,7 @@ function handle(c, m) {
     }
     case 'queue': {
       leaveRoom(c);
-      const mode = m.mode === 'tdm' ? 'tdm' : 'ffa';
+      const mode = m.mode === 'tdm' ? 'tdm' : (m.mode === 'open' ? 'open' : 'ffa');
       c.name = cleanName(m.name);
       c.qmap = String(m.map || 'plaza').slice(0, 12);
       c.qlimit = Math.max(1, Math.min(100, +m.limit || 30));
@@ -331,7 +335,28 @@ function handle(c, m) {
       if (!c.acct) return c.send({ t: 'error', k: 'accNeedLogin' });
       return c.send({ t: 'acct', acc: ACC.mergeSnap(c.acct, m.snap) });
     }
-    case 'name': case 'avatar': case 'buy': case 'sell': case 'frreq': case 'fraccept': case 'frdecl': case 'frrm': case 'invite': {
+    case 'node': {
+      /* open world: a resource broken by one player is broken for the whole room */
+      const r = c.room; if (!r || !r.started || r.mode !== 'open') return;
+      const id = Math.floor(+m.id); if (!(id >= 0 && id < 100000)) return;
+      if (r.nodes.has(id)) return;
+      r.nodes.add(id);
+      for (const x of r.members) if (x !== c) x.send({ t: 'node', id });
+      return;
+    }
+    case 'chat': {
+      /* room chat: everyone in the same room (lobby or match) gets the message; outside a room it is not sent */
+      const text = String(m.text || '').replace(/[\u0000-\u001f<>]/g, '').trim().slice(0, 160);
+      if (!text) return;
+      const from = (c.name || 'PLAYER').slice(0, 12);
+      const r = c.room; if (!r) return c.send({ t: 'error', k: 'chatNoRoom' });
+      const now = Date.now(); c.chatT = (c.chatT || []).filter(t => now - t < 10000);
+      if (c.chatT.length >= 5) return c.send({ t: 'error', k: 'chatSlow' });
+      c.chatT.push(now);
+      for (const x of r.members) x.send({ t: 'chat', from, seat: c.seat, text });
+      return;
+    }
+    case 'name': case 'avatar': case 'buy': case 'sell': case 'deposit': case 'withdraw': case 'buyres': case 'frreq': case 'fraccept': case 'frdecl': case 'frrm': case 'invite': {
       if (!c.acct) return c.send({ t: 'error', k: 'accNeedLogin' });
       return accAction(c, m);
     }

@@ -170,6 +170,42 @@ function sell(acc, items) {
   acc.gold += Math.floor(gold); save();
   return { acc: view(acc), got: Math.floor(gold) };
 }
+/* ---- world economy: resources from the open world are kept in the account while online ---- */
+const RES_PRICE = { wood: 2, stone: 2, iron: 5, sulfur: 6, crystal: 20, cloth: 3, feather: 1, wool: 2, rawmeat: 3, pillow: 30 };
+/* deposit: move items from the player's world bag into the account, limited per real minute */
+function deposit(acc, items) {
+  const now = Date.now(), mins = Math.min(60, Math.max(0, (now - (acc.depAt || now - 60000)) / 60000));
+  let budget = Math.floor(200 + mins * 300);
+  const taken = {};
+  for (const k in (items || {})) {
+    let n = Math.floor(+items[k] || 0);
+    if (n <= 0 || budget <= 0) continue;
+    if (!(k in RES_PRICE) && !(k in ITEM_RARITY) && !['med','ammo','bp','tent','gold','diamond','redgem'].includes(k)) continue;
+    n = Math.min(n, budget); taken[k] = n; budget -= n;
+  }
+  for (const k in taken) acc.items[k] = (acc.items[k] || 0) + taken[k];
+  acc.depAt = now; save();
+  return { acc: view(acc), taken };
+}
+/* withdraw: take items from the account back into the world bag */
+function withdraw(acc, items) {
+  const give = {};
+  for (const k in (items || {})) {
+    const n = Math.min(Math.floor(+items[k] || 0), acc.items[k] || 0);
+    if (n > 0) { give[k] = n; acc.items[k] -= n; }
+  }
+  save();
+  return { acc: view(acc), give };
+}
+/* buy resources with gold: price per unit, up to 500 per purchase */
+function buyRes(acc, id, qty) {
+  const price = RES_PRICE[id]; if (!price) return { err: 'shopNone' };
+  const n = Math.max(1, Math.min(500, Math.floor(+qty || 1)));
+  const cost = price * n;
+  if (acc.gold < cost) return { err: 'accNoGold' };
+  acc.gold -= cost; acc.items[id] = (acc.items[id] || 0) + n; save();
+  return { acc: view(acc) };
+}
 function findBy(serial) { return Object.values(db.accounts).find(a => a.serial === +serial) || null; }
 function friendReq(acc, serial) {
   serial = +serial; if (!serial || serial === acc.serial) return { err: 'frSelf' };
@@ -199,4 +235,4 @@ function friendRemove(acc, serial) {
   if (t) t.friends = (t.friends || []).filter(x => x !== acc.serial);
   save(); return { acc: view(acc) };
 }
-module.exports = { mergeSnap, changeName, setAvatar, buy, sell, findBy, friendReq, friendAccept, friendDecline, friendRemove, SHOP, register, login, session, accountBySerial, devGen, redeem, claimMail, addGold, view, save };
+module.exports = { deposit, withdraw, buyRes, RES_PRICE, mergeSnap, changeName, setAvatar, buy, sell, findBy, friendReq, friendAccept, friendDecline, friendRemove, SHOP, register, login, session, accountBySerial, devGen, redeem, claimMail, addGold, view, save };
